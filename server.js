@@ -26,32 +26,13 @@ const {
   UNIVERSE_DOMAIN
 } = process.env;
 
-console.log({
-  PORT,
-  JWT_SECRET,
-  FUEL_TOKEN_ADDRESS,
-  CHAIN_RPC_URL,
-  PAYMENT_ADDRESS,
-  PRICE_PER_FUEL,
-  FIREBASE_TYPE,
-  FIREBASE_PROJECT_ID,
-  FIREBASE_PRV_KEY_ID,
-  FIREBASE_PRIVATE_KEY,
-  FIREBASE_CLIENT_EMAIL,
-  FIREBASE_CLIENT_ID,
-  AUTH_URI,
-  TOKEN_URI,
-  AUTH_PROVIDER_CERT,
-  CLIENT_CERT_URL,
-  UNIVERSE_DOMAIN
-});
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
       type: FIREBASE_TYPE,
       project_id: FIREBASE_PROJECT_ID,
       private_key_id: FIREBASE_PRV_KEY_ID,
-      private_key: FIREBASE_PRIVATE_KEY,
+      private_key: FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
       client_email: FIREBASE_CLIENT_EMAIL,
       client_id: FIREBASE_CLIENT_ID,
       auth_uri: AUTH_URI,

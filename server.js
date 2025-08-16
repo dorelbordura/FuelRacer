@@ -104,7 +104,6 @@ app.get('/auth/nonce', (req, res) => {
 
 app.post('/auth/verify', async (req, res) => {
   const { address, signature } = req.body;
-  console.log({address, signature});
   const nonce = nonces.get((address||'').toLowerCase())
   if (!nonce) return res.status(400).json({ error: 'nonce missing' })
 
@@ -217,4 +216,4 @@ app.post('/race/complete', auth, async (req, res) => {
   res.json({ message: 'Finished!', fuel: pdata.fuel||0, win: true, timeMs })
 })
 
-app.listen(PORT, () => console.log(`Fuel Racer backend listening on :${PORT}`))
+app.listen(PORT, () => console.log(`Fuel Racer backend listening on :_|_`));

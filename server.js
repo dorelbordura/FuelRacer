@@ -214,10 +214,7 @@ app.post('/race/complete', auth, async (req, res) => {
   await db.collection('races').doc(active.id).set({ state: 'finished', timeMs }, { merge: true })
   await pref.update({ activeRace: admin.firestore.FieldValue.delete() })
 
-  const newFuel = (pdata.fuel||0) + 1
-  await pref.update({ fuel: newFuel })
-
-  res.json({ message: 'Finished! +1 Fuel reward', fuel: newFuel, win: true, timeMs })
+  res.json({ message: 'Finished!', fuel: pdata.fuel||0, win: true, timeMs })
 })
 
 app.listen(PORT, () => console.log(`Fuel Racer backend listening on :${PORT}`))

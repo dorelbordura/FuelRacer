@@ -30,17 +30,17 @@ const {
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
-      "type": FIREBASE_TYPE,
-      "project_id": FIREBASE_PROJECT_ID,
-      "private_key_id": FIREBASE_PRV_KEY_ID,
-      "private_key": FIREBASE_PRIVATE_KEY,
-      "client_email": FIREBASE_CLIENT_EMAIL,
-      "client_id": FIREBASE_CLIENT_ID,
-      "auth_uri": AUTH_URI,
-      "token_uri": TOKEN_URI,
-      "auth_provider_x509_cert_url": AUTH_PROVIDER_CERT,
-      "client_x509_cert_url": CLIENT_CERT_URL,
-      "universe_domain": UNIVERSE_DOMAIN
+      type: FIREBASE_TYPE,
+      project_id: FIREBASE_PROJECT_ID,
+      private_key_id: FIREBASE_PRV_KEY_ID,
+      private_key: FIREBASE_PRIVATE_KEY,
+      client_email: FIREBASE_CLIENT_EMAIL,
+      client_id: FIREBASE_CLIENT_ID,
+      auth_uri: AUTH_URI,
+      token_uri: TOKEN_URI,
+      auth_provider_x509_cert_url: AUTH_PROVIDER_CERT,
+      client_x509_cert_url: CLIENT_CERT_URL,
+      universe_domain: UNIVERSE_DOMAIN
     })
   })
 }

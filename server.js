@@ -306,6 +306,7 @@ app.post('/runs/start', auth, async (req, res) => {
 // Finish a run: compute elapsed on server, update best result
 app.post('/runs/finish', auth, async (req, res) => {
   const { raceId, runId } = req.body || {}
+  const dateNow = Date.now();
   const addr = req.user.address.toLowerCase()
   if (!raceId || !runId) return res.status(400).json({ error: 'raceId and runId required' })
 
@@ -333,7 +334,7 @@ app.post('/runs/finish', auth, async (req, res) => {
       const nowMs = now.toMillis()
       if (race.state === 'finished' && nowMs > endMs + 15000) throw new Error('Race finished')
 
-      const elapsedMs = Date.now() - startedAt.getTime()
+      const elapsedMs = dateNow - startedAt.getTime()
       if (elapsedMs < 2000 || elapsedMs > 5*60*1000) throw new Error('Invalid elapsed time')
 
       tx.update(runRef, { finishedAt: now, elapsedMs })

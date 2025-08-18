@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken'
 import { JsonRpcProvider, verifyMessage, Contract, parseUnits } from 'ethers'
 import admin from 'firebase-admin'
 import { nanoid } from 'nanoid'
+import cron from "node-cron";
 
 const {
   PORT,
@@ -94,6 +95,76 @@ async function verifyPaymentTx(txHash, buyerAddress, minAmount) {
   return false
 }
 
+function getRaceTimesUTC() {
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth();
+  const d = now.getUTCDate();
+
+  // 13:00–13:30 UTC
+  const race1Start = new Date(Date.UTC(y, m, d, 13, 0, 0));
+  const race1End = new Date(Date.UTC(y, m, d, 14, 0, 0));
+
+  // 21:00–21:30 UTC
+  const race2Start = new Date(Date.UTC(y, m, d, 21, 0, 0));
+  const race2End = new Date(Date.UTC(y, m, d, 22, 0, 0));
+
+  return [
+    { startAt: race1Start, endAt: race1End },
+    { startAt: race2Start, endAt: race2End }
+  ];
+}
+
+async function createDailyRaces() {
+  const races = getRaceTimesUTC();
+
+  for (const race of races) {
+    const raceId = `${race.startAt.toISOString().slice(0, 10)}_${race.startAt.getUTCHours()}`;
+    const ref = db.collection("raceEvents").doc(raceId);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      await ref.set({
+        startAt: admin.firestore.Timestamp.fromDate(race.startAt),
+        endAt: admin.firestore.Timestamp.fromDate(race.endAt),
+        state: "upcoming",
+        createdAt: admin.firestore.Timestamp.now()
+      });
+      console.log(`Created race ${raceId}`);
+    }
+  }
+}
+
+async function updateRaceStates() {
+  const now = new Date();
+  const snap = await db.collection("raceEvents")
+    .where("endAt", ">=", admin.firestore.Timestamp.fromDate(new Date(now.getTime() - 3600*1000)))
+    .get();
+
+  for (const doc of snap.docs) {
+    const race = doc.data();
+    const startAt = race.startAt.toDate();
+    const endAt = race.endAt.toDate();
+
+    let newState = "upcoming";
+    if (now >= startAt && now <= endAt) {
+      newState = "active";
+    } else if (now > endAt) {
+      newState = "finished";
+    }
+
+    if (race.state !== newState) {
+      await doc.ref.update({ state: newState });
+      console.log(`Race ${doc.id} → ${newState}`);
+    }
+  }
+}
+
+// Cron: check every minute
+cron.schedule("* * * * *", async () => {
+  await createDailyRaces();
+  await updateRaceStates();
+});
+
 app.get('/auth/nonce', (req, res) => {
   const { address } = req.query
   if (!address) return res.status(400).json({ error: 'address required' })
@@ -174,46 +245,115 @@ app.post('/fuel/purchase', auth, async (req, res) => {
   res.json({ fuel: newFuel })
 })
 
-app.post('/race/start', auth, async (req, res) => {
-  const addr = req.user.address.toLowerCase()
-  const ref = db.collection('players').doc(addr)
-  const snap = await ref.get()
-  const data = snap.data() || { fuel: 0 }
-  if ((data.fuel||0) < 1) return res.json({ ok: false, message: 'Not enough Fuel', fuel: data.fuel||0 })
+// Public: get summary (active + next upcoming)
+app.get('/races/summary', async (req, res) => {
+  const activeSnap = await db.collection('raceEvents').where('state','==','active').orderBy('startAt','asc').limit(1).get()
+  const active = activeSnap.docs[0]?.data() ? ({ id: activeSnap.docs[0].id, ...activeSnap.docs[0].data() }) : null
 
-  const raceId = nanoid()
-  await ref.update({ fuel: data.fuel - 1, activeRace: { id: raceId, start: admin.firestore.FieldValue.serverTimestamp() } })
-  await db.collection('races').doc(raceId).set({
-    address: addr,
-    startAt: admin.firestore.FieldValue.serverTimestamp(),
-    state: 'running'
-  })
-  res.json({ ok: true, raceId, fuel: data.fuel - 1 })
+  const upcomingSnap = await db.collection('raceEvents').where('state','==','upcoming').orderBy('startAt','asc').limit(2).get()
+  const upcoming = upcomingSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+  res.json({ active, upcoming })
 })
 
-app.post('/race/complete', auth, async (req, res) => {
-  const { timeMs = 999999, crashed = false } = req.body
-  const addr = req.user.address.toLowerCase()
-  const pref = db.collection('players').doc(addr)
-  const psnap = await pref.get()
-  const pdata = psnap.data() || {}
-  const active = pdata.activeRace
-
-  if (!active) return res.status(400).json({ message: 'No active race' })
-
-  if (crashed) {
-    await pref.update({ activeRace: admin.firestore.FieldValue.delete() })
-    return res.json({ message: 'Crashed. Better luck next time!', fuel: pdata.fuel||0 })
-  }
-  if (timeMs < 2000 || timeMs > 60000) {
-    await pref.update({ activeRace: admin.firestore.FieldValue.delete() })
-    return res.json({ message: 'Invalid time reported', fuel: pdata.fuel||0 })
-  }
-
-  await db.collection('races').doc(active.id).set({ state: 'finished', timeMs }, { merge: true })
-  await pref.update({ activeRace: admin.firestore.FieldValue.delete() })
-
-  res.json({ message: 'Finished!', fuel: pdata.fuel||0, win: true, timeMs })
+// Public: list past (finished) events
+app.get('/races/past', async (req, res) => {
+  const n = Math.min(100, Math.max(1, Number(req.query.limit||20)))
+  const snap = await db.collection('raceEvents').where('state','==','finished').orderBy('endAt','desc').limit(n).get()
+  const items = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  res.json({ items })
 })
+
+// Public: leaderboard top N (default 10)
+app.get('/races/:id/leaderboard', async (req, res) => {
+  const top = Math.min(50, Math.max(1, Number(req.query.top||10)))
+  const q = await db.collection('raceEvents').doc(req.params.id).collection('results').orderBy('bestTime','asc').limit(top).get()
+  const rows = q.docs.map((d, i) => ({ rank: i+1, id: d.id, ...d.data() }))
+  res.json({ rows })
+})
+
+// ======================== RUNS (server-timed) ======================
+// Start a run: consume 1 fuel, validate race active, record server start
+app.post('/runs/start', auth, async (req, res) => {
+  const { raceId } = req.body || {}
+  const addr = req.user.address.toLowerCase()
+  if (!raceId) return res.status(400).json({ error: 'raceId required' })
+
+  const raceRef = db.collection('raceEvents').doc(raceId)
+  const playerRef = db.collection('players').doc(addr)
+  try {
+    const result = await db.runTransaction(async (tx) => {
+      const [raceSnap, playerSnap] = await Promise.all([ tx.get(raceRef), tx.get(playerRef) ])
+      if (!raceSnap.exists) throw new Error('Race not found')
+      const race = raceSnap.data()
+      if (race.state !== 'active') throw new Error('Race not active')
+
+      const player = playerSnap.data() || { fuel: 0 }
+      const fuel = player.fuel || 0
+      if (fuel < 1) throw new Error('Not enough Fuel')
+
+      const runRef = raceRef.collection('runs').doc()
+      tx.set(runRef, { playerAddress: addr, startedAt: admin.firestore.FieldValue.serverTimestamp() })
+      tx.update(playerRef, { fuel: fuel - 1 })
+
+      return { runId: runRef.id, fuel: fuel - 1 }
+    })
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message })
+  }
+})
+
+// Finish a run: compute elapsed on server, update best result
+app.post('/runs/finish', auth, async (req, res) => {
+  const { raceId, runId } = req.body || {}
+  const addr = req.user.address.toLowerCase()
+  if (!raceId || !runId) return res.status(400).json({ error: 'raceId and runId required' })
+
+  const raceRef = db.collection('raceEvents').doc(raceId)
+  const runRef = raceRef.collection('runs').doc(runId)
+  const resultRef = raceRef.collection('results').doc(addr)
+
+  try {
+    let elapsedMsOut = 0
+    await db.runTransaction(async (tx) => {
+      const [raceSnap, runSnap, resultSnap] = await Promise.all([
+        tx.get(raceRef), tx.get(runRef), tx.get(resultRef)
+      ])
+      if (!runSnap.exists) throw new Error('Run not found')
+      const run = runSnap.data()
+      if (run.finishedAt) throw new Error('Run already finished')
+
+      const race = raceSnap.data()
+      const now = admin.firestore.Timestamp.now()
+      const startedAt = run.startedAt?.toDate?.()
+      if (!startedAt) throw new Error('Run missing start time')
+
+      // Allow finish while active or within 15s after end
+      const endMs = race.endAt?.toMillis?.() || 0
+      const nowMs = now.toMillis()
+      if (race.state === 'finished' && nowMs > endMs + 15000) throw new Error('Race finished')
+
+      const elapsedMs = Date.now() - startedAt.getTime()
+      if (elapsedMs < 2000 || elapsedMs > 5*60*1000) throw new Error('Invalid elapsed time')
+
+      tx.update(runRef, { finishedAt: now, elapsedMs })
+      elapsedMsOut = elapsedMs
+
+      if (!resultSnap.exists) {
+        tx.set(resultRef, { playerAddress: addr, bestTime: elapsedMs, attempts: 1, updatedAt: now })
+      } else {
+        const r = resultSnap.data()
+        const best = Math.min(r.bestTime || Number.MAX_SAFE_INTEGER, elapsedMs)
+        tx.update(resultRef, { bestTime: best, attempts: (r.attempts||0)+1, updatedAt: now })
+      }
+    })
+    res.json({ ok: true, elapsedMs: elapsedMsOut })
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message })
+  }
+})
+
 
 app.listen(PORT, () => console.log(`Fuel Racer backend listening on :_|_`));
+
+

@@ -102,8 +102,8 @@ function getRaceTimesUTC() {
   const d = now.getUTCDate();
 
   // 13:00–13:30 UTC
-  const race1Start = new Date(Date.UTC(y, m, d, 13, 0, 0));
-  const race1End = new Date(Date.UTC(y, m, d, 14, 0, 0));
+  const race1Start = new Date(Date.UTC(y, m, d, 15, 0, 0));
+  const race1End = new Date(Date.UTC(y, m, d, 17, 0, 0));
 
   // 21:00–21:30 UTC
   const race2Start = new Date(Date.UTC(y, m, d, 21, 0, 0));

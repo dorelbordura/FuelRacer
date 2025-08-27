@@ -57,7 +57,14 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
-const nonces = new Map()
+const nonces = new Map();
+
+function adminOnly(req, res, next) {
+  if (!req.user?.isAdmin) {
+    return res.status(403).json({ error: 'Admin only' })
+  }
+  next()
+}
 
 function auth(req, res, next){
   const header = req.headers.authorization || ''
@@ -106,8 +113,8 @@ function getRaceTimesUTC() {
   const race1End = new Date(Date.UTC(y, m, d, 17, 0, 0));
 
   // 21:00–21:30 UTC
-  const race2Start = new Date(Date.UTC(y, m, d, 21, 0, 0));
-  const race2End = new Date(Date.UTC(y, m, d, 22, 0, 0));
+  const race2Start = new Date(Date.UTC(y, m, d, 18, 0, 0));
+  const race2End = new Date(Date.UTC(y, m, d, 24, 0, 0));
 
   return [
     { startAt: race1Start, endAt: race1End },
@@ -194,13 +201,15 @@ app.post('/auth/verify', async (req, res) => {
   const hasAccess = bal >= min
 
   const ref = db.collection('players').doc(address.toLowerCase())
-  const snap = await ref.get()
+  const snap = await ref.get();
+  let player = snap.data();
   if (!snap.exists) {
-    await ref.set({ fuel: 0, lastClaim: null, createdAt: admin.firestore.FieldValue.serverTimestamp() })
+    await ref.set({ fuel: 0, lastClaim: null, isAdmin: false, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    player = { fuel: 0, isAdmin: false };
   }
 
-  const jwtToken = jwt.sign({ address, hasAccess }, JWT_SECRET, { expiresIn: '7d' })
-  res.json({ token: jwtToken, hasAccess })
+  const jwtToken = jwt.sign({ address, hasAccess, isAdmin: player.isAdmin }, JWT_SECRET, { expiresIn: '7d' })
+  res.json({ token: jwtToken, hasAccess, isAdmin: player.isAdmin })
 })
 
 app.get('/player/me', auth, async (req, res) => {
@@ -352,6 +361,26 @@ app.post('/runs/finish', auth, async (req, res) => {
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message })
   }
+});
+
+app.get('/admin/players', auth, adminOnly, async (req, res) => {
+  const snap = await db.collection('players').orderBy('createdAt', 'desc').limit(200).get()
+  const players = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  res.json({ players })
+})
+
+app.post('/admin/giveFuel', auth, adminOnly, async (req, res) => {
+  const { address, amount } = req.body
+  if (!address || !amount) return res.status(400).json({ error: 'address and amount required' })
+
+  const ref = db.collection('players').doc(address.toLowerCase())
+  const snap = await ref.get()
+  const data = snap.data() || { fuel: 0 }
+
+  const newFuel = (data.fuel || 0) + Number(amount)
+  await ref.set({ ...data, fuel: newFuel }, { merge: true })
+
+  res.json({ ok: true, address: address.toLowerCase(), fuel: newFuel })
 })
 
 

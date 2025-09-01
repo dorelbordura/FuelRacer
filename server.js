@@ -322,12 +322,14 @@ app.post('/runs/finish', auth, async (req, res) => {
   const raceRef = db.collection('raceEvents').doc(raceId)
   const runRef = raceRef.collection('runs').doc(runId)
   const resultRef = raceRef.collection('results').doc(addr)
+  const playerRef = db.collection('players').doc(addr)
+  let newLevel = null, newXp = null;
 
   try {
     let elapsedMsOut = 0
     await db.runTransaction(async (tx) => {
-      const [raceSnap, runSnap, resultSnap] = await Promise.all([
-        tx.get(raceRef), tx.get(runRef), tx.get(resultRef)
+      const [raceSnap, runSnap, resultSnap, playerSnap] = await Promise.all([
+        tx.get(raceRef), tx.get(runRef), tx.get(resultRef), tx.get(playerRef)
       ])
       if (!runSnap.exists) throw new Error('Run not found')
       const run = runSnap.data()
@@ -356,8 +358,32 @@ app.post('/runs/finish', auth, async (req, res) => {
         const best = Math.min(r.bestTime || Number.MAX_SAFE_INTEGER, elapsedMs)
         tx.update(resultRef, { bestTime: best, attempts: (r.attempts||0)+1, updatedAt: now })
       }
+
+      // ✅ Add XP + Leveling
+      const player = playerSnap.data() || { xp: 0, level: 1 }
+      const currentXp = player.xp || 0
+      const currentLevel = player.level || 1
+      const gainedXp = 10
+      let totalXp = currentXp + gainedXp
+      let level = currentLevel
+
+      // Check for level up(s)
+      while (totalXp >= 100 * Math.pow(2, level - 1)) {
+        totalXp -= 100 * Math.pow(2, level - 1)
+        level++
+      }
+
+      tx.set(playerRef, { 
+        ...player, 
+        xp: totalXp, 
+        level, 
+        updatedAt: now 
+      }, { merge: true })
+
+      newLevel = level
+      newXp = totalXp
     })
-    res.json({ ok: true, elapsedMs: elapsedMsOut })
+    res.json({ ok: true, elapsedMs: elapsedMsOut, xp: newXp, level: newLevel })
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message })
   }

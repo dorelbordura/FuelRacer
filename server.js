@@ -2,7 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import jwt from 'jsonwebtoken'
-import { JsonRpcProvider, verifyMessage, Contract, parseUnits } from 'ethers'
+import { JsonRpcProvider, verifyMessage, Contract, parseUnits, getBigInt, Wallet } from 'ethers'
 import admin from 'firebase-admin'
 import { nanoid } from 'nanoid'
 import cron from "node-cron";
@@ -13,7 +13,6 @@ const {
   FUEL_TOKEN_ADDRESS,
   CHAIN_RPC_URL,
   PAYMENT_ADDRESS,
-  PRICE_PER_FUEL,
   FIREBASE_TYPE,
   FIREBASE_PROJECT_ID,
   FIREBASE_PRV_KEY_ID,
@@ -58,6 +57,11 @@ app.use(cors())
 app.use(express.json())
 
 const nonces = new Map();
+const fuelCost = {
+  1: 250000,
+  5: 1000000,
+  20: 3500000
+}
 
 function adminOnly(req, res, next) {
   if (!req.user?.isAdmin) {
@@ -68,10 +72,10 @@ function adminOnly(req, res, next) {
 
 function auth(req, res, next){
   const header = req.headers.authorization || ''
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null
-  if (!token) return res.status(401).json({ error: 'No token' })
+  const jwt_token = header.startsWith('Bearer ') ? header.slice(7) : null
+  if (!jwt_token) return res.status(401).json({ error: 'No token' })
   try {
-    const payload = jwt.verify(token, JWT_SECRET)
+    const payload = jwt.verify(jwt_token, JWT_SECRET)
     req.user = payload
     next()
   } catch (e) {
@@ -79,27 +83,49 @@ function auth(req, res, next){
   }
 }
 
-// Helper: verify ERC20 transfer to PAYMENT_ADDRESS for minimum amount
+// Rewards wallet (holds tokens, does the burn)
+const rewardsWallet = new Wallet(process.env.REWARDS_PK, provider);
+
+const tokenAbi2 = [
+  "function burn(uint256 value) public",
+  "function transfer(address to, uint256 value) public returns (bool)",
+  "function balanceOf(address account) view returns (uint256)",
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+];
+const token = new Contract(FUEL_TOKEN_ADDRESS, tokenAbi2, rewardsWallet);
+
 async function verifyPaymentTx(txHash, buyerAddress, minAmount) {
-  if (!txHash) return false
+  if (!txHash) return false;
+
   try {
-    const receipt = await provider.getTransactionReceipt(txHash)
-    if (!receipt || !receipt.logs) return false
-    const transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a0e5d1e5c"
+
+    let receipt = null;
+    for (let i = 0; i < 10; i++) {
+      receipt = await provider.getTransactionReceipt(txHash);
+      if (receipt) break;
+      await new Promise(r => setTimeout(r, 3000)); // wait 3s
+    }
+
+    if (!receipt || !receipt.logs) return false;
+
     for (const log of receipt.logs) {
-      if (log.address.toLowerCase() === (FUEL_TOKEN_ADDRESS || '').toLowerCase() && log.topics && log.topics[0] === transferTopic) {
-        const from = '0x' + log.topics[1].slice(26)
-        const to = '0x' + log.topics[2].slice(26)
-        const amount = BigInt(log.data)
-        if (to.toLowerCase() === (PAYMENT_ADDRESS || '').toLowerCase() && from.toLowerCase() === buyerAddress.toLowerCase()) {
-          if (amount >= BigInt(minAmount)) return true
+      if (log.address.toLowerCase() === FUEL_TOKEN_ADDRESS.toLowerCase() && log.topics.length === 3) {
+        const from = "0x" + log.topics[1].slice(26);
+        const to = "0x" + log.topics[2].slice(26);
+        const amount = BigInt(log.data);
+
+        if (from.toLowerCase() === buyerAddress.toLowerCase() &&
+            to.toLowerCase() === PAYMENT_ADDRESS.toLowerCase() &&
+            amount >= BigInt(minAmount)) {
+          return true;
         }
       }
     }
   } catch (e) {
-    console.error('verifyPaymentTx error', e)
+    console.error("verifyPaymentTx error", e);
   }
-  return false
+
+  return false;
 }
 
 function getRaceTimesUTC() {
@@ -195,8 +221,8 @@ app.post('/auth/verify', async (req, res) => {
   }
   nonces.delete(address.toLowerCase())
 
-  const token = new Contract(FUEL_TOKEN_ADDRESS, tokenAbi, provider)
-  const bal = await token.balanceOf(address)
+  const tokenContract = new Contract(FUEL_TOKEN_ADDRESS, tokenAbi, provider)
+  const bal = await tokenContract.balanceOf(address)
   const min = parseUnits('10000000', 18)
   const hasAccess = bal >= min
 
@@ -242,14 +268,23 @@ app.post('/fuel/purchase', auth, async (req, res) => {
   const data = snap.data() || { fuel: 0 }
 
   const units = Math.max(1, Math.min(100, amount))
-  const pricePerFuel = PRICE_PER_FUEL ? parseUnits(PRICE_PER_FUEL, 18) : parseUnits('1', 18)
+  const pricePerFuel = parseUnits(String(fuelCost[amount]), 18)
   const totalPrice = pricePerFuel * BigInt(units)
 
   if (!PAYMENT_ADDRESS) return res.status(500).json({ error: 'PAYMENT_ADDRESS not configured' })
   const ok = await verifyPaymentTx(txHash, addr, totalPrice)
   if (!ok) return res.status(400).json({ error: 'Payment verification failed. Provide txHash of a valid transfer.' })
 
-  const newFuel = (data.fuel||0) + units
+  const half = getBigInt(totalPrice) / 2n;
+
+  const ownerWallet = new Wallet(process.env.REWARDS_PK, provider);
+  const tokenWithSigner = token.connect(ownerWallet);
+  
+  // 2. Burn 50%
+  const burnTx = await tokenWithSigner.transfer("0x000000000000000000000000000000000000dEaD", half);
+  await burnTx.wait();
+
+  const newFuel = (data.fuel||0) + amount
   await ref.set({ ...data, fuel: newFuel }, { merge: true })
   res.json({ fuel: newFuel })
 })

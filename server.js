@@ -244,20 +244,21 @@ app.get('/player/me', auth, async (req, res) => {
   res.json(doc.data() || {})
 })
 
-app.post('/fuel/claimDaily', auth, async (req, res) => {
+app.post('/fuel/claimWeekly', auth, async (req, res) => {
   const addr = req.user.address.toLowerCase()
   const ref = db.collection('players').doc(addr)
   const snap = await ref.get()
   const data = snap.data() || { fuel: 0 }
   const now = Date.now()
   const last = data.lastClaim?.toMillis?.() || 0
-  const oneDay = 24 * 60 * 60 * 1000
-  if (now - last < oneDay) {
-    return res.json({ message: 'Daily already claimed', fuel: data.fuel })
+  const oneWeek = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+
+  if (now - last < oneWeek) {
+    return res.json({ message: 'Weekly already claimed', fuel: data.fuel })
   }
   await ref.update({ fuel: (data.fuel||0)+1, lastClaim: admin.firestore.FieldValue.serverTimestamp() })
   const updated = await ref.get()
-  res.json({ message: 'Daily +1 Fuel', fuel: updated.data().fuel })
+  res.json({ message: 'Weekly +1 Fuel', fuel: updated.data().fuel })
 })
 
 app.post('/fuel/purchase', auth, async (req, res) => {

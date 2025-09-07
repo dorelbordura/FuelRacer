@@ -134,13 +134,13 @@ function getRaceTimesUTC() {
   const m = now.getUTCMonth();
   const d = now.getUTCDate();
 
-  // 13:00–13:30 UTC
-  const race1Start = new Date(Date.UTC(y, m, d, 15, 0, 0));
-  const race1End = new Date(Date.UTC(y, m, d, 17, 0, 0));
+  // 00:00–11:00 UTC
+  const race1Start = new Date(Date.UTC(y, m, d, 0, 0, 0));
+  const race1End = new Date(Date.UTC(y, m, d, 11, 0, 0));
 
-  // 21:00–21:30 UTC
-  const race2Start = new Date(Date.UTC(y, m, d, 18, 0, 0));
-  const race2End = new Date(Date.UTC(y, m, d, 24, 0, 0));
+  // 12:00–23:00 UTC
+  const race2Start = new Date(Date.UTC(y, m, d, 12, 0, 0));
+  const race2End = new Date(Date.UTC(y, m, d, 23, 0, 0));
 
   return [
     { startAt: race1Start, endAt: race1End },

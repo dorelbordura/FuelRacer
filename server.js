@@ -425,6 +425,22 @@ app.post('/runs/finish', auth, async (req, res) => {
   }
 });
 
+app.post('/admin/createUser', auth, adminOnly, async (req, res) => {
+  const { address } = req.body;
+
+  if (!address) return res.status(400).json({ error: 'address missing' });
+
+  const ref = db.collection('players').doc(address.toLowerCase())
+  const snap = await ref.get();
+  let player = snap.data();
+  if (!snap.exists) {
+    await ref.set({ fuel: 0, lastClaim: null, isAdmin: false, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    player = { fuel: 0, isAdmin: false };
+  }
+
+  res.json({ ok: true });
+});
+
 app.get('/admin/players', auth, adminOnly, async (req, res) => {
   const snap = await db.collection('players').orderBy('createdAt', 'desc').limit(200).get()
   const players = snap.docs.map(d => ({ id: d.id, ...d.data() }))

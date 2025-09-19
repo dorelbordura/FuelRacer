@@ -64,7 +64,7 @@ app.use(express.json())
 
 const nonces = new Map();
 const fuelCost = {
-  1: 2,
+  1: 250000,
   5: 1000000,
   20: 3500000
 }

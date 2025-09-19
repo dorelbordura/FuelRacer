@@ -2,10 +2,11 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import jwt from 'jsonwebtoken'
-import { JsonRpcProvider, verifyMessage, Contract, parseUnits, getBigInt, Wallet } from 'ethers'
+import { JsonRpcProvider, verifyMessage, Contract, parseUnits, getBigInt, Wallet, Interface } from 'ethers'
 import admin from 'firebase-admin'
 import { nanoid } from 'nanoid'
 import cron from "node-cron";
+import { ok } from 'assert'
 
 const {
   PORT,
@@ -50,7 +51,14 @@ const tokenAbi = [
   { inputs:[{internalType:'address',name:'account',type:'address'}],
     name:'balanceOf', outputs:[{internalType:'uint256',name:'',type:'uint256'}],
     stateMutability:'view', type:'function' }
-]
+];
+
+const FUELSHOP_ADDRESS = process.env.FUELSHOP_ADDRESS;
+
+const FUELSHOP_ABI = [
+  "function buyFuel(uint256 amount) external",
+  "event FuelPurchased(address indexed buyer, uint256 amount)"
+];
 
 const app = express()
 app.use(cors())
@@ -58,7 +66,7 @@ app.use(express.json())
 
 const nonces = new Map();
 const fuelCost = {
-  1: 250000,
+  1: 2,
   5: 1000000,
   20: 3500000
 }
@@ -87,46 +95,11 @@ function auth(req, res, next){
 const rewardsWallet = new Wallet(process.env.REWARDS_PK, provider);
 
 const tokenAbi2 = [
-  "function burn(uint256 value) public",
   "function transfer(address to, uint256 value) public returns (bool)",
   "function balanceOf(address account) view returns (uint256)",
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 ];
 const token = new Contract(FUEL_TOKEN_ADDRESS, tokenAbi2, rewardsWallet);
-
-async function verifyPaymentTx(txHash, buyerAddress, minAmount) {
-  if (!txHash) return false;
-
-  try {
-
-    let receipt = null;
-    for (let i = 0; i < 10; i++) {
-      receipt = await provider.getTransactionReceipt(txHash);
-      if (receipt) break;
-      await new Promise(r => setTimeout(r, 3000)); // wait 3s
-    }
-
-    if (!receipt || !receipt.logs) return false;
-
-    for (const log of receipt.logs) {
-      if (log.address.toLowerCase() === FUEL_TOKEN_ADDRESS.toLowerCase() && log.topics.length === 3) {
-        const from = "0x" + log.topics[1].slice(26);
-        const to = "0x" + log.topics[2].slice(26);
-        const amount = BigInt(log.data);
-
-        if (from.toLowerCase() === buyerAddress.toLowerCase() &&
-            to.toLowerCase() === PAYMENT_ADDRESS.toLowerCase() &&
-            amount >= BigInt(minAmount)) {
-          return true;
-        }
-      }
-    }
-  } catch (e) {
-    console.error("verifyPaymentTx error", e);
-  }
-
-  return false;
-}
 
 function getRaceTimesUTC() {
   const now = new Date();
@@ -261,34 +234,93 @@ app.post('/fuel/claimWeekly', auth, async (req, res) => {
   res.json({ message: 'Weekly +1 Fuel', fuel: updated.data().fuel })
 })
 
+async function verifyPaymentTx(txHash, expectedBuyer, minAmount) {
+  if (!txHash) return false;
+
+  try {
+    let receipt = null;
+    for (let i = 0; i < 10; i++) {
+      receipt = await provider.getTransactionReceipt(txHash);
+      if (receipt) break;
+      await new Promise(r => setTimeout(r, 3000));
+    }
+
+    if (!receipt || !receipt.logs) return false;
+
+    if (receipt.to?.toLowerCase() !== FUELSHOP_ADDRESS.toLowerCase()) {
+      return false;
+    }
+
+    const iface = new Interface(FUELSHOP_ABI);
+    for (const log of receipt.logs) {
+      if (log.address.toLowerCase() === FUELSHOP_ADDRESS.toLowerCase()) {
+        try {
+          const parsed = iface.parseLog(log);
+          if (parsed.name === "FuelPurchased") {
+            const { buyer, amount } = parsed.args;
+            if (
+              buyer.toLowerCase() === expectedBuyer.toLowerCase() &&
+              amount >= BigInt(minAmount)
+            ) {
+              return { buyer, amount };
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch (e) {
+    console.error("verifyPaymentTx error", e);
+  }
+
+  return false;
+}
+
 app.post('/fuel/purchase', auth, async (req, res) => {
   const { amount = 1, txHash } = req.body
   const addr = req.user.address.toLowerCase()
+
+  if (!txHash) return res.status(400).json({ error: 'Missing txHash' })
+
+  const txRef = db.collection('processedTxs').doc(txHash)
+  const txSnap = await txRef.get()
+  if (txSnap.exists) {
+    return res.status(400).json({ error: 'Transaction already processed' })
+  }
+
   const ref = db.collection('players').doc(addr)
   const snap = await ref.get()
   const data = snap.data() || { fuel: 0 }
 
   const units = Math.max(1, Math.min(100, amount))
-  const pricePerFuel = parseUnits(String(fuelCost[amount]), 18)
-  const totalPrice = pricePerFuel * BigInt(units)
+  const totalPrice = parseUnits(String(fuelCost[units]), 18)
 
-  if (!PAYMENT_ADDRESS) return res.status(500).json({ error: 'PAYMENT_ADDRESS not configured' })
-  const ok = await verifyPaymentTx(txHash, addr, totalPrice)
-  if (!ok) return res.status(400).json({ error: 'Payment verification failed. Provide txHash of a valid transfer.' })
+  const verified = await verifyPaymentTx(txHash, addr, totalPrice)
+  if (!verified) {
+    return res.status(400).json({ error: 'Payment verification failed' })
+  }
 
-  const half = getBigInt(totalPrice) / 2n;
+  const half = getBigInt(totalPrice) / 2n
+  const ownerWallet = new Wallet(process.env.REWARDS_PK, provider)
+  const tokenWithSigner = token.connect(ownerWallet)
+  const burnTx = await tokenWithSigner.transfer("0x000000000000000000000000000000000000dEaD", half)
+  await burnTx.wait()
 
-  const ownerWallet = new Wallet(process.env.REWARDS_PK, provider);
-  const tokenWithSigner = token.connect(ownerWallet);
-  
-  // 2. Burn 50%
-  const burnTx = await tokenWithSigner.transfer("0x000000000000000000000000000000000000dEaD", half);
-  await burnTx.wait();
-
-  const newFuel = (data.fuel||0) + amount
+  const newFuel = (data.fuel || 0) + amount
   await ref.set({ ...data, fuel: newFuel }, { merge: true })
-  res.json({ fuel: newFuel })
+
+  await txRef.set({
+    buyer: addr,
+    amount,
+    totalPrice: totalPrice.toString(),
+    burned: half.toString(),
+    processedAt: Date.now()
+  })
+
+  res.json({ fuel: newFuel, ok: true})
 })
+
 
 // Public: get summary (active + next upcoming)
 app.get('/races/summary', async (req, res) => {

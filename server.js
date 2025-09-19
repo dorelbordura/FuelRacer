@@ -6,14 +6,12 @@ import { JsonRpcProvider, verifyMessage, Contract, parseUnits, getBigInt, Wallet
 import admin from 'firebase-admin'
 import { nanoid } from 'nanoid'
 import cron from "node-cron";
-import { ok } from 'assert'
 
 const {
   PORT,
   JWT_SECRET,
   FUEL_TOKEN_ADDRESS,
   CHAIN_RPC_URL,
-  PAYMENT_ADDRESS,
   FIREBASE_TYPE,
   FIREBASE_PROJECT_ID,
   FIREBASE_PRV_KEY_ID,

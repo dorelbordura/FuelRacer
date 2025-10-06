@@ -12,6 +12,8 @@ const {
   JWT_SECRET,
   FUEL_TOKEN_ADDRESS,
   CHAIN_RPC_URL,
+  FUELSHOP_ADDRESS,
+  REWARDS_PK,
   FIREBASE_TYPE,
   FIREBASE_PROJECT_ID,
   FIREBASE_PRV_KEY_ID,
@@ -24,6 +26,23 @@ const {
   CLIENT_CERT_URL,
   UNIVERSE_DOMAIN
 } = process.env;
+
+// Fail fast on missing configuration
+const requiredEnv = [
+  'JWT_SECRET',
+  'CHAIN_RPC_URL',
+  'FUEL_TOKEN_ADDRESS',
+  'FUELSHOP_ADDRESS',
+  'REWARDS_PK',
+  'FIREBASE_PRIVATE_KEY',
+  'FIREBASE_CLIENT_EMAIL',
+  'FIREBASE_PROJECT_ID'
+];
+for (const key of requiredEnv) {
+  if (!process.env[key]) {
+    throw new Error(`Missing required env: ${key}`);
+  }
+}
 
 if (!admin.apps.length) {
   admin.initializeApp({
